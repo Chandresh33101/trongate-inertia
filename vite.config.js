@@ -41,6 +41,35 @@ export default defineConfig(({ command }) => ({
     outDir: 'public/build',
     emptyOutDir: true,
     manifest: true,
-    rollupOptions: { input: 'resources/js/app.jsx' },
+    rollupOptions: {
+      input: 'resources/js/app.jsx',
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            return 'trongate-' + id.split('/').slice(-2).join('-');
+          }
+        }
+      }
+    }
   },
+  // build: {
+  //   outDir: 'public/build',
+  //   emptyOutDir: true,
+  //   manifest: true,
+  //   rollupOptions: { 
+  //     input: 'resources/js/app.jsx',
+  //     output: {
+  //       // Splits third-party libraries out of your app chunk
+  //       manualChunks(id) {
+  //         if (id.includes('node_modules')) {
+  //           // Group major dependencies together
+  //           if (id.includes('react')) return 'trongate-react';
+  //           if (id.includes('react-dom')) return 'trongate-react-dom';
+  //           if (id.includes('@inertiajs')) return 'trongate-inertia';
+  //           return 'trongate'; // Everything else in node_modules
+  //         }
+  //       }
+  //     }
+  //   },
+  // },
 }));

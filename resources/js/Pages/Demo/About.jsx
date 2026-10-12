@@ -1,14 +1,17 @@
-import { Link, router, useForm, usePage } from '@inertiajs/react';
-import { url } from '@/lib/url';
+import { Head, usePage } from '@inertiajs/react';
+import AppLayout from '../../Layouts/AppLayout';
 
 export default function About() {
+  const { app, year } = usePage().props; // shared props
 
   return (
-    <div className="container text-left">
-      <h1>Demo About</h1>
-
-      <p><Link href={url('demo')}>Demo Main (separate chunk)</Link></p>
-      <p><Link href={url('demo/demo')}>Demo Page (separate chunk)</Link></p>
-    </div>
+    <>
+      <Head title="About" />
+      <h1>About</h1>
+      <p>This page is its own lazy-loaded chunk. Check the Network tab: it loads on first visit, or on hover thanks to <code>prefetch</code>.</p>
+      <p>Shared props: <b>{app.name}</b> / {year}</p>
+    </>
   );
 }
+
+// About.layout = (page) => <AppLayout>{page}</AppLayout>;

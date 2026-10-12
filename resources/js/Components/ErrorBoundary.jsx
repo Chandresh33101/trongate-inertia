@@ -21,7 +21,7 @@ class ErrorBoundary extends React.Component {
     if (this.state.hasError) {
       // Custom fallback UI using <code> tags
       return (
-        <div style={{ padding: '20px', backgroundColor: '#fff', color: '#111', fontFamily: 'sans-serif' }}>
+        <div className="container" style={{ padding: '20px', backgroundColor: '#fff', color: '#111', fontFamily: 'sans-serif' }}>
           <h2 style={{ color: '#dc2626' }}>Application Render Error</h2>
           <p>The application encountered a client-side JavaScript error:</p>
           <pre style={{ 
