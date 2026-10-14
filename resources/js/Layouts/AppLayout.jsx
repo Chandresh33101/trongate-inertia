@@ -8,8 +8,9 @@ export default function AppLayout({ children }) {
     <div className="container text-left">
       <nav style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '1rem' }}>
         <strong>{app.name}</strong>
-        <Link href={url('demo')}>Records</Link>
+        <Link href={url('demo')} prefetch>Records</Link>
         <Link href={url('demo/demo')}>Playground</Link>
+        {/* <Link href={url('demo/scroll_demo')}>Scroll Demo</Link> */}
         <Link href={url('demo/about')} prefetch>About (prefetch)</Link>
         <Link href={url('demo/secret')}>Secret (admin)</Link>
         <Link href={url('demo/ping')} method="post" as="button" preserveScroll>POST link</Link>

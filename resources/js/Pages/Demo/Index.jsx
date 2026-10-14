@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Head, Link, router, useForm } from '@inertiajs/react';
+import { Deferred, Head, Link, router, useForm } from '@inertiajs/react';
 import AppLayout from '../../Layouts/AppLayout';
 import { url } from '../../lib/url';
 
@@ -51,17 +51,18 @@ export default function Index({ records, total, page, per_page, filters }) {
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Search (debounced GET, partial reload)"
+        autoComplete="off"
       />
-
+    <Deferred data="records" fallback={<p>Loading Records..</p>}>
       <ul>
-        {records.map((r) => (
+        {records?.map((r) => (
           <li key={r.id}>
             {r.name}{' '}
             <Link href={url(`demo/edit/${r.id}`)} prefetch cacheFor={['0s', '1m']}>Edit</Link>{' '}
             <button className="danger" onClick={() => remove(r.id)}>Delete</button>
           </li>
         ))}
-        {records.length === 0 && <li>No records found.</li>}
+        {records?.length === 0 && <li>No records found.</li>}
       </ul>
 
       <p>
@@ -69,13 +70,13 @@ export default function Index({ records, total, page, per_page, filters }) {
         Page {page} / {pages} ({total} total){' '}
         {page < pages && <Link href={url('demo')} data={params(page + 1)} preserveState>Next »</Link>}
       </p>
-
+    </Deferred>
       <form onSubmit={submit}>
         <input
           value={form.data.name}
           onChange={(e) => form.setData('name', e.target.value)}
           placeholder="Name"
-          autoComplete="off"
+          autocomplete="off"
         />
         {form.errors.name && <p style={{ color: 'red' }}>{form.errors.name}</p>}
         <button type="submit" disabled={form.processing}>

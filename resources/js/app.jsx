@@ -1,5 +1,4 @@
 import { createInertiaApp } from '@inertiajs/react';
-// import { createRoot } from 'react-dom/client';
 import ErrorBoundary from './Components/ErrorBoundary.jsx';
 import AppLayout from './Layouts/AppLayout.jsx';
 // Lazy glob: Vite emits one chunk per page file, loaded on navigation. This should auto code split all pages, and allow for separate chunks to be loaded on demand, this keeps the app small.
@@ -40,12 +39,5 @@ createInertiaApp({
       </ErrorBoundary>
     );
   },
-  /*setup({ el, App, props }) {
-    createRoot(el).render(
-      <ErrorBoundary>
-        <App {...props} />
-      </ErrorBoundary>
-    );
-  },*/
   progress: { color: '#4b5563' },
 });

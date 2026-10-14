@@ -353,188 +353,214 @@ class Core {
                 }
                 
                 try {
-                    // Sanitize path (handles realpath resolution and traversal)
-                    $asset_path = $this->sanitize_file_path($asset_path, '../modules/');
-                    if(!is_file($asset_path)) {
-                        $asset_path = $this->sanitize_file_path($asset_path, '../modules/tg-core/');
+                    // Build candidate paths
+                    $module_slug = strtolower($target_module);           // e.g. 'trongate_control-flo'
+                    $child_slug  = str_replace('-', '/', $module_slug);  // e.g. 'trongate_control/flo'
+
+                    $candidates = [
+                        '../modules/'            . $module_slug . '/' . $target_dir . '/' . $file_name,
+                        '../modules/'            . $child_slug  . '/' . $target_dir . '/' . $file_name,
+                        '../modules/tg-core/'    . $module_slug . '/' . $target_dir . '/' . $file_name,
+                        '../modules/tg-core/'    . $child_slug  . '/' . $target_dir . '/' . $file_name,
+                    ];
+
+                    // Precompute allowed bases once
+                    $allowed_bases = array_filter([
+                        realpath('../modules/'),
+                        realpath('../modules/tg-core/'),
+                    ]);
+
+                    $asset_path = null;
+                    foreach ($candidates as $candidate) {
+                        $real = realpath($candidate);
+                        if (!$real || !is_file($real)) {
+                            continue;
+                        }
+                        foreach ($allowed_bases as $base) {
+                            // Use base + separator to prevent '/modules-evil' matching '/modules'
+                            if (str_starts_with($real, $base . DIRECTORY_SEPARATOR)) {
+                                $asset_path = $real;
+                                break 2;
+                            }
+                        }
+                    }
+
+                    if ($asset_path === null) {
+                        http_response_code(404);
+                        die('Asset not found');
+                    }
+                    if (strpos($asset_path, $allowed_bases[0]) !== 0) {
+                        http_response_code(403);
+                        die('Access denied: path outside modules directory');
                     }
                     
-                    if (is_file($asset_path)) {
-                        
-                        // Post-Sanitization Path Validation
-                        $real_modules_path = realpath('../modules/');
-                        if (strpos($asset_path, $real_modules_path) !== 0) {
-                            http_response_code(403);
-                            die('Access denied: path outside modules directory');
-                        }
-                        
-                        // Block symbolic links
-                        if (is_link($asset_path)) {
-                            http_response_code(403);
-                            die('Access denied: symbolic links not allowed');
-                        }
-                        
-                        // File Extension & Type Validation
-                        $file_extension = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-                        $file_name_lower = strtolower($file_name);
-                        
-                        // Require file extension
-                        if (empty($file_extension)) {
-                            http_response_code(403);
-                            die('Access denied: no file extension');
-                        }
-                        
-                        // Comprehensive list of forbidden extensions
-                        $forbidden_extensions = [
-                            // PHP variants
-                            'php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'php8', 'phps',
-                            'pht', 'phar', 'inc',
-                            // Server-side scripts
-                            'sh', 'bash', 'cgi', 'pl', 'py', 'rb', 'asp', 'aspx', 'jsp',
-                            // Configuration and sensitive files
-                            'sql', 'env', 'ini', 'conf', 'config',
-                            // Server configuration
-                            'htaccess', 'htpasswd',
-                            // Backup/temp files
-                            'bak', 'backup', 'old', 'tmp', 'temp', 'swp',
-                            // Executables
-                            'exe', 'dll', 'so', 'bat', 'cmd', 'com'
-                        ];
-                        
-                        // Block forbidden extensions
-                        if (in_array($file_extension, $forbidden_extensions, true)) {
-                            http_response_code(403);
-                            die('Access denied: forbidden file type');
-                        }
-                        
-                        // Block files with PHP in extension chain (e.g., file.php.txt)
-                        if (preg_match('/\.php[^\/]*$/i', $file_name)) {
-                            http_response_code(403);
-                            die('Access denied: forbidden file type');
-                        }
-                        
-                        // Block specific sensitive filenames
-                        $sensitive_files = [
-                            'api.json',
-                            '.env',
-                            '.env.local',
-                            '.env.production',
-                            '.htaccess',
-                            '.htpasswd',
-                            'config.php',
-                            'database.php',
-                            'config.ini',
-                            'settings.php',
-                            'composer.json',
-                            'composer.lock',
-                            'package.json',
-                            'package-lock.json'
-                        ];
-                        
-                        if (in_array($file_name_lower, $sensitive_files, true)) {
-                            http_response_code(403);
-                            die('Access denied: sensitive file');
-                        }
-                        
-                        // Block hidden files (starting with .)
-                        if (strpos(basename($file_name), '.') === 0) {
-                            http_response_code(403);
-                            die('Access denied: hidden file');
-                        }
-                        
-                        // Browser Cache Headers
-                        if (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && 
-                            strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) >= filemtime($asset_path)) {
-                                header('Last-Modified: '.gmdate('D, d M Y H:i:s',  filemtime($asset_path)).' GMT', true, 304);
-                                die;
-                        }
-                        
-                        // MIME Type Detection
-                        $content_type = match($file_extension) {
-                            // Text-based formats
-                            'css' => 'text/css',
-                            'js' => 'text/javascript',
-                            'json' => 'application/json',
-                            'xml' => 'application/xml',
-                            'txt' => 'text/plain',
-                            'html', 'htm' => 'text/html',
-                            'md' => 'text/markdown',
-                            
-                            // Images
-                            'svg' => 'image/svg+xml',
-                            'jpg', 'jpeg' => 'image/jpeg',
-                            'png' => 'image/png',
-                            'gif' => 'image/gif',
-                            'webp' => 'image/webp',
-                            'ico' => 'image/x-icon',
-                            'bmp' => 'image/bmp',
-                            'tiff', 'tif' => 'image/tiff',
-                            'avif' => 'image/avif',
-                            
-                            // Fonts
-                            'woff' => 'font/woff',
-                            'woff2' => 'font/woff2',
-                            'ttf' => 'font/ttf',
-                            'eot' => 'application/vnd.ms-fontobject',
-                            'otf' => 'font/otf',
-                            
-                            // Audio/Video
-                            'mp3' => 'audio/mpeg',
-                            'mp4' => 'video/mp4',
-                            'webm' => 'video/webm',
-                            'ogg' => 'audio/ogg',
-                            'wav' => 'audio/wav',
-                            'avi' => 'video/x-msvideo',
-                            'mov' => 'video/quicktime',
-                            
-                            // Documents
-                            'pdf' => 'application/pdf',
-                            'doc' => 'application/msword',
-                            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                            'xls' => 'application/vnd.ms-excel',
-                            'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                            'ppt' => 'application/vnd.ms-powerpoint',
-                            'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                            
-                            // Archives
-                            'zip' => 'application/zip',
-                            'rar' => 'application/x-rar-compressed',
-                            'tar' => 'application/x-tar',
-                            'gz' => 'application/gzip',
-                            
-                            // Fallback to mime_content_type for unknown extensions
-                            default => mime_content_type($asset_path)
-                        };
-
-                        // Content Type Validation - Block dangerous content types
-                        if (strpos(strtolower($content_type), 'php') !== false) {
-                            http_response_code(403);
-                            die('Access denied: forbidden content type');
-                        }
-
-                        // Send Headers and Content
-                        header('Content-type: ' . $content_type);
-                        header('Last-Modified: ' . gmdate('D, d M Y H:i:s', filemtime($asset_path)) . ' GMT');
-                        header('X-Frame-Options: SAMEORIGIN');
-                        header('X-Content-Type-Options: nosniff');
-                        
-                        // SVG-specific: Content Security Policy
-                        if ($file_extension === 'svg') {
-                            header("Content-Security-Policy: script-src 'none'; object-src 'none'; sandbox");
-                        }
-                        
-                        // Send file content
-                        readfile($asset_path);
-                        die;
+                    // Block symbolic links
+                    if (is_link($asset_path)) {
+                        http_response_code(403);
+                        die('Access denied: symbolic links not allowed');
                     }
+                    
+                    // File Extension & Type Validation
+                    $file_extension = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+                    $file_name_lower = strtolower($file_name);
+                    
+                    // Require file extension
+                    if (empty($file_extension)) {
+                        http_response_code(403);
+                        die('Access denied: no file extension');
+                    }
+                    
+                    // Comprehensive list of forbidden extensions
+                    $forbidden_extensions = [
+                        // PHP variants
+                        'php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'php8', 'phps',
+                        'pht', 'phar', 'inc',
+                        // Server-side scripts
+                        'sh', 'bash', 'cgi', 'pl', 'py', 'rb', 'asp', 'aspx', 'jsp',
+                        // Configuration and sensitive files
+                        'sql', 'env', 'ini', 'conf', 'config',
+                        // Server configuration
+                        'htaccess', 'htpasswd',
+                        // Backup/temp files
+                        'bak', 'backup', 'old', 'tmp', 'temp', 'swp',
+                        // Executables
+                        'exe', 'dll', 'so', 'bat', 'cmd', 'com'
+                    ];
+                    
+                    // Block forbidden extensions
+                    if (in_array($file_extension, $forbidden_extensions, true)) {
+                        http_response_code(403);
+                        die('Access denied: forbidden file type');
+                    }
+                    
+                    // Block files with PHP in extension chain (e.g., file.php.txt)
+                    if (preg_match('/\.php[^\/]*$/i', $file_name)) {
+                        http_response_code(403);
+                        die('Access denied: forbidden file type');
+                    }
+                    
+                    // Block specific sensitive filenames
+                    $sensitive_files = [
+                        'api.json',
+                        '.env',
+                        '.env.local',
+                        '.env.production',
+                        '.htaccess',
+                        '.htpasswd',
+                        'config.php',
+                        'database.php',
+                        'config.ini',
+                        'settings.php',
+                        'composer.json',
+                        'composer.lock',
+                        'package.json',
+                        'package-lock.json'
+                    ];
+                    
+                    if (in_array($file_name_lower, $sensitive_files, true)) {
+                        http_response_code(403);
+                        die('Access denied: sensitive file');
+                    }
+                    
+                    // Block hidden files (starting with .)
+                    if (strpos(basename($file_name), '.') === 0) {
+                        http_response_code(403);
+                        die('Access denied: hidden file');
+                    }
+                    
+                    // Browser Cache Headers
+                    if (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && 
+                        strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) >= filemtime($asset_path)) {
+                            header('Last-Modified: '.gmdate('D, d M Y H:i:s',  filemtime($asset_path)).' GMT', true, 304);
+                            die;
+                    }
+                    
+                    // MIME Type Detection
+                    $content_type = match($file_extension) {
+                        // Text-based formats
+                        'css' => 'text/css',
+                        'js' => 'text/javascript',
+                        'json' => 'application/json',
+                        'xml' => 'application/xml',
+                        'txt' => 'text/plain',
+                        'html', 'htm' => 'text/html',
+                        'md' => 'text/markdown',
+                        
+                        // Images
+                        'svg' => 'image/svg+xml',
+                        'jpg', 'jpeg' => 'image/jpeg',
+                        'png' => 'image/png',
+                        'gif' => 'image/gif',
+                        'webp' => 'image/webp',
+                        'ico' => 'image/x-icon',
+                        'bmp' => 'image/bmp',
+                        'tiff', 'tif' => 'image/tiff',
+                        'avif' => 'image/avif',
+                        
+                        // Fonts
+                        'woff' => 'font/woff',
+                        'woff2' => 'font/woff2',
+                        'ttf' => 'font/ttf',
+                        'eot' => 'application/vnd.ms-fontobject',
+                        'otf' => 'font/otf',
+                        
+                        // Audio/Video
+                        'mp3' => 'audio/mpeg',
+                        'mp4' => 'video/mp4',
+                        'webm' => 'video/webm',
+                        'ogg' => 'audio/ogg',
+                        'wav' => 'audio/wav',
+                        'avi' => 'video/x-msvideo',
+                        'mov' => 'video/quicktime',
+                        
+                        // Documents
+                        'pdf' => 'application/pdf',
+                        'doc' => 'application/msword',
+                        'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        'xls' => 'application/vnd.ms-excel',
+                        'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        'ppt' => 'application/vnd.ms-powerpoint',
+                        'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                        
+                        // Archives
+                        'zip' => 'application/zip',
+                        'rar' => 'application/x-rar-compressed',
+                        'tar' => 'application/x-tar',
+                        'gz' => 'application/gzip',
+                        
+                        // Fallback to mime_content_type for unknown extensions
+                        default => mime_content_type($asset_path)
+                    };
+
+                    // Content Type Validation - Block dangerous content types
+                    if (strpos(strtolower($content_type), 'php') !== false) {
+                        http_response_code(403);
+                        die('Access denied: forbidden content type');
+                    }
+
+                    // Send Headers and Content
+                    header('Content-type: ' . $content_type);
+                    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', filemtime($asset_path)) . ' GMT');
+                    header('X-Frame-Options: SAMEORIGIN');
+                    header('X-Content-Type-Options: nosniff');
+                    
+                    // SVG-specific: Content Security Policy
+                    if ($file_extension === 'svg') {
+                        header("Content-Security-Policy: script-src 'none'; object-src 'none'; sandbox");
+                    }
+                    
+                    // Send file content
+                    readfile($asset_path);
+                    die;
+                    
 
                     // Never expose directory existence through a successful response.
                     http_response_code(404);
-                    die('Asset not found');
+                    die('Asset not found Private File');
                 } catch (Exception $e) {
                     // Don't expose internal paths in error messages
                     http_response_code(404);
-                    die('Asset not found');
+                    die('Asset not found 404 Error');
                 }
             }
         }
