@@ -15,6 +15,11 @@ class Welcome extends Trongate {
             'view_module' => 'welcome',
             'view_file' => 'default_homepage'
         ];
+        $title = "Some title";
+        $d_title = "2nd title";
+        $logger = new Logger();
+        $logger->debug("database query executed");
+        $logger->info("user signed in", $title . " " . $d_title);
 
         $this->templates->public($data);
     }

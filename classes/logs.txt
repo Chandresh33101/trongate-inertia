@@ -1,0 +1,7 @@
+
+[2026-10-15 11:21:36.000000] [debug] database query executed
+[2026-10-15 11:21:36.000000] [info] user signed in
+'Some title2nd title'
+[2026-10-15 11:22:04.000000] [debug] database query executed
+[2026-10-15 11:22:04.000000] [info] user signed in
+'Some title 2nd title'

@@ -99,32 +99,6 @@ $config['login'] = [
                 ]
             ]
         ],
-        2 => [
-            'target_table'        => 'users',
-            'user_ref_field'      => 'trongate_user_id',
-            'secret_login_word'       => 'user',
-            'redirect_on_success'     => 'user/dashboard',
-            'allow_remember'          => 1,
-            'remember_days'           => 30,
-            'enable_forgot_password'  => true,
-            'view_file'               => 'login_default',
-            'fields'              => [
-                'identifiers' => [
-                    'username' => [
-                        'column' => 'username',
-                        'label'  => 'Username'
-                    ],
-                    'email'    => [
-                        'column' => 'email',
-                        'label'  => 'Email'
-                    ]
-                ],
-                'password' => [
-                    'column' => 'password',
-                    'label'  => 'Password'
-                ]
-            ]
-        ],
 
         // ── Additional user levels ──────────────────────────────────
         //
