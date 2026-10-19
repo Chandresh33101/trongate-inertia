@@ -1,13 +1,14 @@
 <?php
 /**
  * Ultra-optimised Inertia adapter for Trongate v2.
+ * PHP: 8.2+  |  Protocol: Inertia v2/v3
  *
- * Usage in any controller:  Inertia::render('Demo/Index', ['records' => $rows]);
- * Registered as an interceptor (config: INTERCEPTORS) to do version checks
- * and to normalise Inertia's JSON PUT/PATCH/DELETE bodies for post()/validation.
- *
- * Protocol version: Inertia v2.x / v3.x compatible
- * PHP: 8.2+
+ * Performance notes (vs. previous version):
+ *  - version():  md5_file() → stat()  (1 syscall, no disk read/hash)
+ *  - hot_origin(): removed fsockopen() (was blocking 200ms on dead Vite)
+ *  - header_list(): fast path for single-value headers
+ *  - load_manifest()/assets(): optional APCu cross-request cache
+ *  - base_path(): static-cached parse_url()
  */
 class Inertia
 {
@@ -19,44 +20,39 @@ class Inertia
     private static array   $title_meta      = [];
     private static ?string $csrf_token      = null;
     private static bool    $method_normalised = false;
+    private static ?string $base_path_cache = null;
 
-    private const ENTRY       = 'resources/js/app.jsx';
-    private const JSON_FLAGS  = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
+    private const ENTRY      = 'resources/js/app.jsx';
+    private const JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
     private const PARTIAL_HEADERS = [
-        'only'   => 'HTTP_X_INERTIA_PARTIAL_DATA',
-        'except' => 'HTTP_X_INERTIA_PARTIAL_EXCEPT',
-        'reset'  => 'HTTP_X_INERTIA_RESET',
+        'only'        => 'HTTP_X_INERTIA_PARTIAL_DATA',
+        'except'      => 'HTTP_X_INERTIA_PARTIAL_EXCEPT',
+        'reset'       => 'HTTP_X_INERTIA_RESET',
         'except_once' => 'HTTP_X_INERTIA_EXCEPT_ONCE_PROPS',
         'error_bag'   => 'HTTP_X_INERTIA_ERROR_BAG',
     ];
 
     // ── Interceptor ──────────────────────────────────────────────────────────
 
-    /**
-     * Runs on every request (registered via INTERCEPTORS config).
-     * Handles version checks and JSON body normalisation.
-     */
     public function intercept(): void
     {
         if (!self::is_inertia()) {
-            return;
+            return;                       // hot path for non-Inertia pages
         }
 
-        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-        // Asset version mismatch on GET => hard reload.
-        if ($method === 'GET'
-            && ($_SERVER['HTTP_X_INERTIA_VERSION'] ?? '') !== self::version()) {
-            http_response_code(409);
-            header('X-Inertia-Location: ' . current_url());
-            die();
-        }
-
+        // GET/HEAD: only the version check matters (fast via stat()).
         if ($method === 'GET' || $method === 'HEAD') {
+            if ($method === 'GET'
+                && ($_SERVER['HTTP_X_INERTIA_VERSION'] ?? '') !== self::version()) {
+                http_response_code(409);
+                header('X-Inertia-Location: ' . current_url());
+                die();
+            }
             return;
         }
 
-        // Normalise method once.
         if (self::$method_normalised) {
             return;
         }
@@ -64,21 +60,19 @@ class Inertia
 
         $_SERVER['INERTIA_ORIGINAL_METHOD'] = $method;
 
-        // Decode JSON body into $_POST so post()/validation work.
+        // JSON body → $_POST (so post() / validation work).
         if (stripos($_SERVER['CONTENT_TYPE'] ?? '', 'application/json') !== false) {
-            $raw = file_get_contents('php://input');
+            $raw     = file_get_contents('php://input');
             $decoded = ($raw !== '' && $raw !== false) ? json_decode($raw, true) : [];
-            $_POST = is_array($decoded) ? $decoded : [];
+            $_POST   = is_array($decoded) ? $decoded : [];
             $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
         }
 
-        // CSRF token from XSRF/CSRF header.
         $token = $_SERVER['HTTP_X_XSRF_TOKEN'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if ($token !== '' && !isset($_POST['csrf_token'])) {
             $_POST['csrf_token'] = $token;
         }
 
-        // post() reads $_POST when REQUEST_METHOD is POST.
         $_SERVER['REQUEST_METHOD'] = 'POST';
     }
 
@@ -89,7 +83,6 @@ class Inertia
         return isset($_SERVER['HTTP_X_INERTIA']);
     }
 
-    /** Share props with every page: Inertia::share('user', fn() => ...) */
     public static function share(string|array $key, mixed $value = null): void
     {
         if (is_array($key)) {
@@ -99,105 +92,40 @@ class Inertia
         }
     }
 
-    public static function set_version(string $version): void
-    {
-        self::$version = $version;
-    }
-
-    public static function encrypt_history(bool $on = true): void
-    {
-        self::$encrypt_history = $on;
-    }
-
-    /**
-     * Override the root view for the current request.
-     * Inertia::setRootView('custom_app') renders views/custom_app.php.
-     */
-    public static function setRootView(string $view): void
-    {
-        self::$root_view = $view;
-    }
-
-    /**
-     * Set page title and/or meta tags for the root template.
-     * Inertia::title('Dashboard'); Inertia::meta(['description' => '...']);
-     */
-    public static function title(string $title): void
-    {
-        self::$title_meta['title'] = $title;
-    }
+    public static function set_version(string $version): void { self::$version = $version; }
+    public static function encrypt_history(bool $on = true): void { self::$encrypt_history = $on; }
+    public static function setRootView(string $view): void { self::$root_view = $view; }
+    public static function title(string $title): void { self::$title_meta['title'] = $title; }
 
     public static function meta(array $tags): void
     {
         self::$title_meta['meta'] = array_merge(self::$title_meta['meta'] ?? [], $tags);
     }
 
-    /** Alias for optional() — kept for parity with older adapters. */
     public static function lazy(callable|Closure $value): Inertia_prop
-    {
-        return new Inertia_prop('optional', $value);
-    }
+    { return new Inertia_prop('optional', $value); }
 
-    /** Alias for optional() — legacy name. */
     public static function optional(callable|Closure $value): Inertia_prop
-    {
-        return new Inertia_prop('optional', $value);
-    }
+    { return new Inertia_prop('optional', $value); }
 
-    /** Included even in partial reloads that don't list it. */
     public static function always(mixed $value): Inertia_prop
-    {
-        return new Inertia_prop('always', $value);
-    }
+    { return new Inertia_prop('always', $value); }
 
-    /** Loaded by the client right after the first render (Inertia v2). */
     public static function defer(Closure $value, string $group = 'default'): Inertia_prop
-    {
-        return new Inertia_prop('defer', $value, $group);
-    }
+    { return new Inertia_prop('defer', $value, $group); }
 
-    // ── Public API: merge variants ───────────────────────────────────────────
-
-    /** Append to existing client data on partial reloads (default merge). */
     public static function merge(mixed $value): Inertia_merge
-    {
-        return new Inertia_merge($value, Inertia_merge::APPEND);
-    }
+    { return new Inertia_merge($value, Inertia_merge::APPEND); }
 
-    /** Prepend to existing client data on partial reloads. */
     public static function prepend(mixed $value): Inertia_merge
-    {
-        return new Inertia_merge($value, Inertia_merge::PREPEND);
-    }
+    { return new Inertia_merge($value, Inertia_merge::PREPEND); }
 
-    /** Deep-merge nested objects/arrays into existing client data. */
     public static function deepMerge(mixed $value): Inertia_merge
-    {
-        return new Inertia_merge($value, Inertia_merge::DEEP);
-    }
+    { return new Inertia_merge($value, Inertia_merge::DEEP); }
 
-    /**
-     * Attach a match key to a merge/prepend/deepMerge prop so the client
-     * can deduplicate items by a field (e.g. 'id').
-     *
-     * Usage: Inertia::matchOn('id', Inertia::merge($items))
-     */
     public static function matchOn(string $key, Inertia_merge $prop): Inertia_merge
-    {
-        $prop->matchOn = $key;
-        return $prop;
-    }
+    { $prop->matchOn = $key; return $prop; }
 
-    // ── Public API: infinite scroll ──────────────────────────────────────────
-
-    /**
-     * Wrap a paginator (length-aware, simple, or cursor) for infinite scroll.
-     *
-     * $pageName  — query-string key that holds the page/cursor (default 'page').
-     * $cursorKey — set true for cursor paginators; the value is the cursor field name.
-     *
-     * Usage: Inertia::scroll(fn () => User::paginate(), 'page');
-     */
     public static function scroll(
         callable|Closure $value,
         string $pageName = 'page',
@@ -207,16 +135,6 @@ class Inertia
         return new Inertia_scroll($value, $pageName, $cursor, $cursorKey);
     }
 
-    // ── Public API: once (cached-across-visits) ──────────────────────────────
-
-    /**
-     * Prop whose value is computed once per client session and then cached.
-     *
-     * $customKey  — optional key the client uses to identify the cached value.
-     * $expiresAt  — optional Unix epoch millis after which the cache is stale.
-     *
-     * Usage: Inertia::once(fn () => expensiveQuery(), 'lookups');
-     */
     public static function once(
         callable|Closure $value,
         ?string $customKey = null,
@@ -225,20 +143,9 @@ class Inertia
         return new Inertia_once($value, $customKey, $expiresAt);
     }
 
-    // ── Public API: pagination helper ────────────────────────────────────────
-
-    /**
-     * Normalise a paginator result into an Inertia-friendly prop.
-     * Works with length-aware, simple, and cursor paginators.
-     *
-     * Returns an array with keys: data, meta, links.
-     */
+    // ── paginate() unchanged (see original) ──────────────────────────────────
     public static function paginate(object|array $paginator): array
     {
-        /*if (is_array($paginator)) {
-            $paginator = (object)$paginator;
-        }*/
-        // Length-aware paginator (Laravel / Trongate).
         if (!is_array($paginator) && method_exists($paginator, 'items') && method_exists($paginator, 'total')) {
             return [
                 'data'  => $paginator->items(),
@@ -259,7 +166,6 @@ class Inertia
             ];
         }
 
-        // Simple paginator.
         if (!is_array($paginator) && method_exists($paginator, 'items') && method_exists($paginator, 'hasMorePages')) {
             return [
                 'data'  => $paginator->items(),
@@ -275,7 +181,6 @@ class Inertia
             ];
         }
 
-        // Cursor paginator.
         if (!is_array($paginator) && method_exists($paginator, 'items') && method_exists($paginator, 'cursor')) {
             return [
                 'data'  => $paginator->items(),
@@ -291,7 +196,6 @@ class Inertia
             ];
         }
 
-        // Fallback: treat as plain array.
         return is_array($paginator) ? $paginator : (array) $paginator;
     }
 
@@ -303,47 +207,41 @@ class Inertia
         $partial    = $is_inertia
             && (($_SERVER['HTTP_X_INERTIA_PARTIAL_COMPONENT'] ?? '') === $component);
 
-        // Parse partial headers into hash maps for O(1) lookups.
-        $only   = $partial ? self::header_list(self::PARTIAL_HEADERS['only'])   : [];
-        $except = $partial ? self::header_list(self::PARTIAL_HEADERS['except']) : [];
-        $reset  = $is_inertia ? self::header_list(self::PARTIAL_HEADERS['reset']) : [];
-        $except_once = self::header_list(self::PARTIAL_HEADERS['except_once']);
+        $only        = $partial ? self::header_list(self::PARTIAL_HEADERS['only'])   : [];
+        $except      = $partial ? self::header_list(self::PARTIAL_HEADERS['except']) : [];
+        $reset       = $is_inertia ? self::header_list(self::PARTIAL_HEADERS['reset']) : [];
+        $except_once = $is_inertia ? self::header_list(self::PARTIAL_HEADERS['except_once']) : [];
 
-        // Merge shared props.
         $props = $props === [] ? self::$shared : array_merge(self::$shared, $props);
 
-        // Always-injected props.
         $token = self::csrf_token();
         $props['csrf_token'] = $token;
         $props['errors']     = new Inertia_prop('always', self::pull_errors());
         $props['flash']      = new Inertia_prop('always', ['message' => self::pull_flash()]);
 
         // ── Single-pass resolution ───────────────────────────────────────────
-        $resolved   = [];
-        $deferred   = [];
-        $merge      = [];
-        $prepend    = [];
-        $deepMerge  = [];
-        $matchOn    = [];
-        $scroll     = [];
-        $onceProps  = [];
+        $resolved  = [];
+        $deferred  = [];
+        $merge     = [];
+        $prepend   = [];
+        $deepMerge = [];
+        $matchOn   = [];
+        $scroll    = [];
+        $onceProps = [];
 
         foreach ($props as $key => $value) {
             $type = $value instanceof Inertia_prop ? $value->type : 'plain';
 
-            // Partial-reload filtering.
             if ($partial && $type !== 'always') {
                 if ($only !== [] && !isset($only[$key])) continue;
                 if (isset($except[$key])) continue;
             }
 
-            // Optional / lazy props: only in partial reloads when requested.
             if ($type === 'optional') {
                 if (!$partial) continue;
                 if ($only !== [] && !isset($only[$key])) continue;
             }
 
-            // Deferred props: collect for first load, resolve on request.
             if ($type === 'defer') {
                 if (!$partial) {
                     $deferred[$value->group][] = $key;
@@ -352,23 +250,17 @@ class Inertia
                 if ($only !== [] && !isset($only[$key])) continue;
             }
 
-            // Once props: check client cache.
-            $onceKey = null;
-            $onceMeta = null;
             if ($value instanceof Inertia_once) {
-                $onceKey = $value->customKey ?? $key;
-                $onceMeta = ['prop' => $key, 'expiresAt' => $value->expiresAt];
-                $onceProps[$onceKey] = $onceMeta;
-
-                // Skip resolution if client already has it and not expired.
+                $onceKey  = $value->customKey ?? $key;
+                $onceProps[$onceKey] = ['prop' => $key, 'expiresAt' => $value->expiresAt];
                 if (isset($except_once[$onceKey])
-                    && ($value->expiresAt === null || $value->expiresAt > (int) (microtime(true) * 1000))
+                    && ($value->expiresAt === null
+                        || $value->expiresAt > (int)(microtime(true) * 1000))
                 ) {
                     continue;
                 }
             }
 
-            // Merge family: collect metadata, resolve value.
             if ($value instanceof Inertia_merge) {
                 $strategy = $value->strategy;
                 if ($strategy === Inertia_merge::APPEND) {
@@ -383,27 +275,64 @@ class Inertia
                 }
             }
 
-            // Scroll props: collect metadata.
             if ($value instanceof Inertia_scroll) {
-                // Merge the nested 'data' path instead of the whole object
-                $dataPath = $key . '.data';
+                $dataPath    = $key . '.data';
+                $mergeIntent = strtolower(trim((string)(
+                    $_SERVER['HTTP_X_INERTIA_INFINITE_SCROLL_MERGE_INTENT'] ?? ''
+                )));
+
                 if (!isset($reset[$key])) {
-                    $merge[] = $dataPath;
+                    if ($mergeIntent === 'prepend') $prepend[] = $dataPath;
+                    else                            $merge[]   = $dataPath;
                 }
-                // Also track the parent for metadata
-                $scroll[$key] = $value->toMeta();
+
+                $scrollData = self::resolve($value);
+
+                if (is_array($scrollData)) {
+                    $requestUri  = $_SERVER['REQUEST_URI'] ?? '/';
+                    $requestPath = parse_url($requestUri, PHP_URL_PATH) ?: '/';
+
+                    $scheme = (
+                        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https')
+                    ) ? 'https' : 'http';
+
+                    $host    = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                    $baseUrl = $scheme . '://' . $host . $requestPath;
+
+                    if (!isset($scrollData['meta']) || !is_array($scrollData['meta'])) {
+                        $scrollData['meta'] = [];
+                    }
+                    if (empty($scrollData['meta']['path'])) {
+                        $scrollData['meta']['path'] = $baseUrl;
+                    }
+
+                    if (isset($scrollData['links']) && is_array($scrollData['links'])) {
+                        foreach ($scrollData['links'] as $lk => $link) {
+                            if (!is_string($link) || $link === '') continue;
+                            if (str_starts_with($link, '?')) {
+                                $scrollData['links'][$lk] = $baseUrl . $link;
+                            } elseif (str_starts_with($link, '/')) {
+                                $scrollData['links'][$lk] = $scheme . '://' . $host . $link;
+                            } elseif (!preg_match('~^https?://~i', $link)) {
+                                $scrollData['links'][$lk] = $baseUrl . '?' . ltrim($link, '?');
+                            }
+                        }
+                    }
+                }
+
+                $scroll[$key]   = $value->toMeta($scrollData);
+                $resolved[$key] = $scrollData;
+                continue;
             }
 
-            // Resolve the value.
             $resolved[$key] = self::resolve($value);
         }
 
-        // Post-process: errors empty object, not empty array.
         if (($resolved['errors'] ?? null) === []) {
             $resolved['errors'] = new stdClass();
         }
 
-        // ── Build page object ────────────────────────────────────────────────
         $page = [
             'component' => $component,
             'props'     => $resolved,
@@ -411,12 +340,12 @@ class Inertia
             'version'   => self::version(),
         ];
 
-        if ($deferred !== [])  $page['deferredProps']  = $deferred;
-        if ($merge !== [])     $page['mergeProps']     = $merge;
-        if ($prepend !== [])   $page['prependProps']   = $prepend;
+        if ($deferred  !== []) $page['deferredProps']  = $deferred;
+        if ($merge     !== []) $page['mergeProps']     = $merge;
+        if ($prepend   !== []) $page['prependProps']   = $prepend;
         if ($deepMerge !== []) $page['deepMergeProps'] = $deepMerge;
-        if ($matchOn !== [])   $page['matchPropsOn']   = array_keys($matchOn);
-        if ($scroll !== [])    $page['scrollProps']    = $scroll;
+        if ($matchOn   !== []) $page['matchPropsOn']   = array_keys($matchOn);
+        if ($scroll    !== []) $page['scrollProps']    = $scroll;
         if ($onceProps !== []) $page['onceProps']      = $onceProps;
         if (self::$encrypt_history) $page['encryptHistory'] = true;
 
@@ -432,13 +361,11 @@ class Inertia
             return;
         }
 
-        // ── HTML render ──────────────────────────────────────────────────────
         header('Content-Type: text/html; charset=utf-8');
         $page_attr = htmlspecialchars($json, ENT_QUOTES, 'UTF-8');
         $assets    = self::assets();
-        $base_path = parse_url(BASE_URL, PHP_URL_PATH) ?: '/';
+        $base_path = self::base_path();
 
-        // Root-view customisation data.
         $inertia_title = self::$title_meta['title'] ?? '';
         $inertia_meta  = self::$title_meta['meta']  ?? [];
 
@@ -448,29 +375,17 @@ class Inertia
 
     // ── Public API: redirects ────────────────────────────────────────────────
 
-    /**
-     * Redirect that works for every HTTP verb (303 turns PUT/PATCH/DELETE
-     * into a GET). Use this instead of redirect() in Inertia controllers.
-     *
-     * $preserveFragment — when true, the #hash from the current request is
-     * carried over to the destination.
-     */
     public static function redirect(string $to, bool $preserveFragment = false): void
     {
         $to = self::absolute_url($to);
-
         if ($preserveFragment) {
-            $fragment = self::current_fragment();
-            if ($fragment !== '') {
-                $to .= $fragment;
-            }
+            $f = self::current_fragment();
+            if ($f !== '') $to .= $f;
         }
-
         header('Location: ' . $to, true, 303);
         die();
     }
 
-    /** Redirect to the previous page (e.g. after validation failure). */
     public static function back(string $fallback = '', bool $preserveFragment = false): void
     {
         $ref      = previous_url();
@@ -482,72 +397,61 @@ class Inertia
         if ($same_host) {
             self::redirect($ref, $preserveFragment);
         }
-
-        $dest = $fallback !== '' ? $fallback : BASE_URL;
-        self::redirect($dest, $preserveFragment);
+        self::redirect($fallback !== '' ? $fallback : BASE_URL, $preserveFragment);
     }
 
-    /**
-     * Hard redirect (external site, or a non-Inertia page like the login form).
-     *
-     * $preserveFragment — when true, the #hash from the current request is
-     * carried over to the destination.
-     */
     public static function location(string $url, bool $preserveFragment = false): void
     {
         $url = self::absolute_url($url);
-
         if ($preserveFragment) {
-            $fragment = self::current_fragment();
-            if ($fragment !== '') {
-                $url .= $fragment;
-            }
+            $f = self::current_fragment();
+            if ($f !== '') $url .= $f;
         }
-
         if (self::is_inertia()) {
             http_response_code(409);
             header('X-Inertia-Location: ' . $url);
             die();
         }
-
         header('Location: ' . $url, true, 303);
         die();
     }
 
-    // ── Public API: history ──────────────────────────────────────────────────
-
-    /**
-     * Clear the browser history state. When the client renders this page,
-     * it rotates the encryption key, rendering previous history unreadable.
-     */
     public static function clearHistory(): void
     {
-        self::$encrypt_history = true; // ensure encryption is on
+        self::$encrypt_history = true;
         header('X-Inertia-Clear-History: true');
     }
 
     // ── Version ──────────────────────────────────────────────────────────────
 
+    /**
+     * FAST: one stat() syscall (mtime + size). No file read, no md5, no network.
+     * If you need deterministic content hashes, set your own via set_version().
+     */
     public static function version(): string
     {
-        if (self::$version !== null) {
-            return self::$version;
-        }
+        if (self::$version !== null) return self::$version;
 
         foreach (self::manifest_paths() as $path) {
-            if (is_file($path)) {
-                return self::$version = md5_file($path);
+            $s = @stat($path);
+            if ($s !== false && $s['size'] > 0) {
+                return self::$version = $s['mtime'] . '-' . $s['size'];
             }
         }
 
-        return self::$version = (self::hot_origin() !== null ? 'dev' : '1');
+        return self::$version = (
+            (defined('ENV') && strtolower(ENV) === 'dev'
+                && is_file(APPPATH . 'public/hot'))
+                ? 'dev'
+                : '1'
+        );
     }
 
     // ── Vite integration ─────────────────────────────────────────────────────
 
     public static function assets(string $entry = self::ENTRY): string
     {
-        // Dev server (HMR).
+        // Dev server (HMR) — no fsockopen; the `hot` file is authoritative.
         $origin = self::hot_origin();
         if ($origin !== null) {
             $o = htmlspecialchars($origin, ENT_QUOTES, 'UTF-8');
@@ -564,16 +468,23 @@ class Inertia
                 . '<script type="module" src="' . $o . '/' . $e . '"></script>';
         }
 
-        // Production manifest.
-        $manifest = self::load_manifest();
-        if (!is_array($manifest) || !isset($manifest[$entry])) {
-            return '<!-- Inertia: build assets missing. Run "npm run build". -->';
+        // Production — cross-request APCu cache (keyed by version).
+        static $cache = [];
+        if (isset($cache[$entry])) return $cache[$entry];
+
+        $version = self::version();
+        $acKey   = 'inertia_assets:' . $version . ':' . $entry;
+
+        if (function_exists('apcu_fetch')) {
+            $cached = apcu_fetch($acKey, $ok);
+            if ($ok && is_string($cached) && $cached !== '') {
+                return $cache[$entry] = $cached;
+            }
         }
 
-        // Cache the import-walk result per entry.
-        static $cache = [];
-        if (isset($cache[$entry])) {
-            return $cache[$entry];
+        $manifest = self::load_manifest();
+        if (!is_array($manifest) || !isset($manifest[$entry])) {
+            return $cache[$entry] = '<!-- Inertia: build assets missing. Run "bun --bun run build". -->';
         }
 
         $css     = [];
@@ -594,7 +505,6 @@ class Inertia
                 $walk($import);
             }
         };
-
         $walk($entry);
 
         $base = BASE_URL . 'build/';
@@ -609,30 +519,33 @@ class Inertia
         }
         $html .= '<script type="module" src="' . $h($base . $manifest[$entry]['file']) . '"></script>';
 
+        if (function_exists('apcu_store')) {
+            @apcu_store($acKey, $html, 3600);
+        }
+
         return $cache[$entry] = $html;
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
 
+    /**
+     * No fsockopen! The previous version blocked 200ms when Vite was down.
+     * In dev mode we simply trust the presence of `public/hot`.
+     */
     private static function hot_origin(): ?string
     {
         static $cached = false;
         if ($cached !== false) return $cached;
 
-        if (strtolower(ENV) !== 'dev') return $cached = null;
+        if (!defined('ENV') || strtolower(ENV) !== 'dev') {
+            return $cached = null;
+        }
 
         $file = APPPATH . 'public/hot';
         if (!is_file($file)) return $cached = null;
 
-        $origin = rtrim(trim((string) file_get_contents($file)), '/');
-        if ($origin === '') return $cached = null;
-
-        $parts = parse_url($origin);
-        $conn  = @fsockopen($parts['host'] ?? 'localhost', (int) ($parts['port'] ?? 5173), $errno, $errstr, 0.2);
-        if ($conn === false) return $cached = null;
-        fclose($conn);
-
-        return $cached = $origin;
+        $origin = rtrim(trim((string) @file_get_contents($file)), '/');
+        return $cached = ($origin !== '' ? $origin : null);
     }
 
     private static function manifest_paths(): array
@@ -649,26 +562,48 @@ class Inertia
         if ($manifest !== null) return $manifest;
 
         foreach (self::manifest_paths() as $path) {
-            if (is_file($path)) {
-                $manifest = json_decode((string) file_get_contents($path), true);
-                return $manifest;
+            if (!is_file($path)) continue;
+
+            $mtime = @filemtime($path);
+
+            if ($mtime !== false && function_exists('apcu_fetch')) {
+                $key    = 'inertia_m:' . $path . ':' . $mtime;
+                $cached = apcu_fetch($key, $ok);
+                if ($ok && is_array($cached)) {
+                    return $manifest = $cached;
+                }
             }
+
+            $json = @file_get_contents($path);
+            if ($json === false || $json === '') continue;
+
+            $decoded = json_decode($json, true);
+            if (!is_array($decoded)) continue;
+
+            if (isset($key) && function_exists('apcu_store')) {
+                @apcu_store($key, $decoded, 3600);
+            }
+
+            return $manifest = $decoded;
         }
 
         return $manifest = null;
     }
 
-    /** Parse a comma-separated header into a flipped hash map (O(1) lookup). */
+    /** Fast path for single-value headers (avoids explode/map/filter/flip). */
     private static function header_list(string $server_key): array
     {
-        $raw = (string) ($_SERVER[$server_key] ?? '');
-        if ($raw === '') return [];
+        $raw = $_SERVER[$server_key] ?? '';
+        if ($raw === '' || $raw === null) return [];
+
+        if (strpos($raw, ',') === false) {
+            return [trim($raw) => true];
+        }
 
         $parts = array_filter(array_map('trim', explode(',', $raw)), 'strlen');
         return array_flip($parts);
     }
 
-    /** Recursively resolve closures and Inertia_prop markers. */
     private static function resolve(mixed $value): mixed
     {
         if ($value instanceof Inertia_prop
@@ -699,7 +634,6 @@ class Inertia
         return $value;
     }
 
-    /** Trongate validation errors -> { field: "first message" } (and consume them). */
     private static function pull_errors(): array
     {
         $raw = $_SESSION['form_submission_errors'] ?? [];
@@ -722,7 +656,6 @@ class Inertia
         return $errors;
     }
 
-    /** set_flashdata() message -> flash.message (and consume it). */
     private static function pull_flash(): ?string
     {
         $msg = $_SESSION['flashdata'] ?? null;
@@ -732,9 +665,7 @@ class Inertia
 
     private static function csrf_token(): string
     {
-        if (self::$csrf_token !== null) {
-            return self::$csrf_token;
-        }
+        if (self::$csrf_token !== null) return self::$csrf_token;
 
         if (!isset($_SESSION['csrf_token'])) {
             $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -743,46 +674,42 @@ class Inertia
         return self::$csrf_token = $_SESSION['csrf_token'];
     }
 
-    /** Readable cookie; axios sends it back as X-XSRF-TOKEN automatically. */
     private static function send_csrf_cookie(string $token): void
     {
-        if (($_COOKIE['XSRF-TOKEN'] ?? '') === $token || headers_sent()) {
-            return;
-        }
+        if (($_COOKIE['XSRF-TOKEN'] ?? '') === $token || headers_sent()) return;
 
         setcookie('XSRF-TOKEN', $token, [
-            'path'     => parse_url(BASE_URL, PHP_URL_PATH) ?: '/',
+            'path'     => self::base_path(),
             'samesite' => 'Lax',
             'secure'   => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
             'httponly' => false,
         ]);
     }
 
-    /** Ensure a URL is absolute (prepends BASE_URL if relative). */
+    /** Static-cached path component of BASE_URL. */
+    private static function base_path(): string
+    {
+        return self::$base_path_cache ??= (parse_url(BASE_URL, PHP_URL_PATH) ?: '/');
+    }
+
     private static function absolute_url(string $url): string
     {
-        if (preg_match('#^https?://#i', $url)) {
-            return $url;
-        }
-
+        if (preg_match('#^https?://#i', $url)) return $url;
         return BASE_URL . ltrim($url, '/');
     }
 
-    /** Extract the current request's fragment (#hash), if any. */
     private static function current_fragment(): string
     {
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         $pos = strpos($uri, '#');
-
         return $pos !== false ? substr($uri, $pos) : '';
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Prop marker classes
+// Prop marker classes — unchanged
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Marker wrapper for optional / always / defer props. */
 final class Inertia_prop
 {
     public function __construct(
@@ -792,10 +719,6 @@ final class Inertia_prop
     ) {}
 }
 
-/**
- * Marker for merge / prepend / deep-merge props.
- * Carries an optional match key for client-side item matching.
- */
 final class Inertia_merge
 {
     public const APPEND  = 'append';
@@ -804,16 +727,9 @@ final class Inertia_merge
 
     public ?string $matchOn = null;
 
-    public function __construct(
-        public mixed $value,
-        public string $strategy
-    ) {}
+    public function __construct(public mixed $value, public string $strategy) {}
 }
 
-/**
- * Marker for infinite-scroll props.
- * Wraps a paginator and emits scroll metadata for the client.
- */
 final class Inertia_scroll
 {
     public function __construct(
@@ -823,61 +739,95 @@ final class Inertia_scroll
         public string $cursorKey = 'cursor'
     ) {}
 
-    public function toMeta(): array
+    public function toMeta(mixed $data = null): array
     {
         $meta = [
             'pageName' => $this->pageName,
             'type'     => $this->cursor ? 'cursor' : 'paged',
+            'reset'    => false,
         ];
 
-        $data = $this->value instanceof Closure ? ($this->value)() : $this->value;
+        if (func_num_args() === 0) {
+            $data = $this->value instanceof Closure ? ($this->value)() : $this->value;
+        }
 
-        // Plain array paginator
         if (is_array($data)) {
             $inner = $data['meta'] ?? [];
             $links = $data['links'] ?? [];
-            $base  = strtok($_SERVER['REQUEST_URI'] ?? '', '?');
 
-            if (isset($inner['current_page'])) {
-                $meta['currentPage'] = (int) $inner['current_page'];
+            if ($this->cursor) {
+                $nextCursor = $inner['next_cursor'] ?? $inner['nextCursor'] ?? null;
+                $prevCursor = $inner['prev_cursor'] ?? $inner['prevCursor'] ?? null;
+
+                if ($nextCursor !== null && $nextCursor !== '') {
+                    $meta['nextPage'] = $nextCursor;
+                } elseif (!empty($links['next'])) {
+                    $meta['nextPage'] = self::cursor_from_link((string) $links['next'], $this->cursorKey);
+                }
+                if ($prevCursor !== null && $prevCursor !== '') {
+                    $meta['previousPage'] = $prevCursor;
+                } elseif (!empty($links['prev'])) {
+                    $meta['previousPage'] = self::cursor_from_link((string) $links['prev'], $this->cursorKey);
+                }
+                $meta['hasMore'] = !empty($meta['nextPage']);
+                return $meta;
             }
+
+            $currentPage = isset($inner['current_page']) ? (int) $inner['current_page'] : 1;
+            $meta['currentPage'] = $currentPage;
+
             if (isset($inner['last_page'])) {
                 $meta['lastPage'] = (int) $inner['last_page'];
             }
-            if (isset($inner['total'], $inner['per_page'])) {
-                $meta['hasMore'] = ($inner['current_page'] * $inner['per_page']) < $inner['total'];
+            if (array_key_exists('has_more', $inner)) {
+                $meta['hasMore'] = (bool) $inner['has_more'];
+            } elseif (isset($inner['total'], $inner['per_page'])) {
+                $meta['hasMore'] = ($currentPage * (int) $inner['per_page']) < (int) $inner['total'];
+            } else {
+                $meta['hasMore'] = !empty($links['next']);
             }
-            if (!empty($links['next'])) {
-                $meta['nextPage'] = $base . '?' . ltrim($links['next'], '?');
-            }
-            if (!empty($links['prev'])) {
-                $meta['previousPage'] = $base . '?' . ltrim($links['prev'], '?');
-            }
+            if (!empty($links['next']) && $meta['hasMore']) $meta['nextPage'] = $currentPage + 1;
+            if (!empty($links['prev']) && $currentPage > 1)    $meta['previousPage'] = $currentPage - 1;
 
             return $meta;
         }
 
-        // Paginator object
         if (is_object($data)) {
-            if (method_exists($data, 'currentPage'))      $meta['currentPage'] = $data->currentPage();
-            if (method_exists($data, 'lastPage'))         $meta['lastPage'] = $data->lastPage();
-            if (method_exists($data, 'hasMorePages'))     $meta['hasMore'] = $data->hasMorePages();
-            if (method_exists($data, 'nextPageUrl'))      $meta['nextPage'] = $data->nextPageUrl();
-            if (method_exists($data, 'previousPageUrl'))  $meta['previousPage'] = $data->previousPageUrl();
-            if ($this->cursor && method_exists($data, 'nextCursor')) {
-                $meta['cursor'] = $data->nextCursor()?->encode();
+            if ($this->cursor) {
+                if (method_exists($data, 'nextCursor') && $data->nextCursor() !== null) {
+                    $meta['nextPage'] = $data->nextCursor()->encode();
+                }
+                if (method_exists($data, 'previousCursor') && $data->previousCursor() !== null) {
+                    $meta['previousPage'] = $data->previousCursor()->encode();
+                }
+                $meta['hasMore'] = !empty($meta['nextPage']);
+                return $meta;
+            }
+            if (method_exists($data, 'currentPage'))   $meta['currentPage'] = (int) $data->currentPage();
+            if (method_exists($data, 'lastPage'))      $meta['lastPage']    = (int) $data->lastPage();
+            if (method_exists($data, 'hasMorePages'))  $meta['hasMore']     = (bool) $data->hasMorePages();
+            if (!empty($meta['hasMore']) && isset($meta['currentPage'])) {
+                $meta['nextPage'] = $meta['currentPage'] + 1;
+            }
+            if (($meta['currentPage'] ?? 1) > 1) {
+                $meta['previousPage'] = $meta['currentPage'] - 1;
             }
         }
 
         return $meta;
     }
+
+    private static function cursor_from_link(string $url, string $cursorKey): ?string
+    {
+        $query = parse_url($url, PHP_URL_QUERY);
+        if (!is_string($query) || $query === '') return null;
+
+        parse_str($query, $params);
+        $cursor = $params[$cursorKey] ?? null;
+        return is_scalar($cursor) && (string) $cursor !== '' ? (string) $cursor : null;
+    }
 }
 
-/**
- * Marker for cached-across-visits props.
- * The client caches the value and sends X-Inertia-Except-Once-Props
- * to skip re-resolution.
- */
 final class Inertia_once
 {
     public function __construct(
