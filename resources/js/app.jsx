@@ -1,6 +1,7 @@
 import { createInertiaApp } from '@inertiajs/react';
 import ErrorBoundary from './Components/ErrorBoundary.jsx';
 import AppLayout from './Layouts/AppLayout.jsx';
+import ClientLayout from './Layouts/ClientLayout.jsx';
 // Lazy glob: Vite emits one chunk per page file, loaded on navigation. This should auto code split all pages, and allow for separate chunks to be loaded on demand, this keeps the app small.
 const pages = import.meta.glob('./Pages/**/*.jsx');
 
@@ -23,6 +24,8 @@ createInertiaApp({
             return null;
         case name.startsWith('Demo/'):
             return [AppLayout];
+        case name.startsWith('TradeManager/'):
+            return [ClientLayout];
     }
   },
   id: 'app',

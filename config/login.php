@@ -100,6 +100,32 @@ $config['login'] = [
             ]
         ],
 
+        // ── Client accounts (Trade Manager) ─────────────────────────
+        // Needs a row in trongate_user_levels with id = 2 and the `clients`
+        // table: see modules/trade_manager/sql/schema.sql
+        2 => [
+            'target_table'        => 'clients',
+            'user_ref_field'      => 'trongate_user_id',
+            'secret_login_word'   => 'client-login',
+            'redirect_on_success' => 'trade_manager',
+            'allow_remember'      => 1,
+            'remember_days'       => 30,
+            'enable_forgot_password' => false,
+            'view_file'           => 'login_default',
+            'fields'              => [
+                'identifiers' => [
+                    'email' => [
+                        'column' => 'email',
+                        'label'  => 'Email Address'
+                    ]
+                ],
+                'password' => [
+                    'column' => 'password',
+                    'label'  => 'Password'
+                ]
+            ]
+        ],
+
         // ── Additional user levels ──────────────────────────────────
         //
         // To add another user level, create a matching row in
