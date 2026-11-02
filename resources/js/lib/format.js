@@ -12,3 +12,6 @@ export const pnlColor = (v) => (v > 0 ? '#15803d' : v < 0 ? '#b91c1c' : 'inherit
 // "2026-11-02T11:17" -> "2 Nov 2026, 11:17"
 export const when = (s) =>
   s ? new Date(s).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+
+export const duration = (min) =>
+  min === null || min === undefined ? '—' : min < 90 ? `${min} min` : min < 2880 ? `${(min / 60).toFixed(1)} h` : `${(min / 1440).toFixed(1)} d`;

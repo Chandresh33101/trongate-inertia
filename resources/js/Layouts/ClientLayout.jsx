@@ -9,6 +9,7 @@ export default function ClientLayout({ children }) {
       <nav style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '1rem' }}>
         <strong>{app.name}</strong>
         <Link href={url('trade_manager')} prefetch>Journal</Link>
+        <Link href={url('trade_manager/analytics')} prefetch>Analytics</Link>
         <Link href={url('trade_manager/create')}>+ New trade</Link>
         {/* Plain link on purpose: logout is a full page load that clears the session */}
         <a href={url('login/logout')} style={{ marginLeft: 'auto' }}>Log out</a>

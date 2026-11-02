@@ -7,6 +7,8 @@
  * scopes its queries by it, so a client can never read or change another
  * client's data even if an id is guessed.
  */
+require_once __DIR__ . '/Trade_analytics.php';
+
 class Trade_manager_model extends Model {
 
     public const PER_PAGE            = 15;
@@ -15,6 +17,8 @@ class Trade_manager_model extends Model {
     public const MAX_FILE_KB         = 5120;   // 5 MB per screenshot
     public const MAX_IMAGE_EDGE      = 2560;   // px; larger images are scaled down
     public const THUMB_EDGE          = 480;    // px
+
+    public const ANALYTICS_MAX_TRADES = 5000;
 
     public const DIRECTIONS = ['long', 'short'];
     public const STATUSES   = ['open', 'closed'];
@@ -129,6 +133,60 @@ class Trade_manager_model extends Model {
             'avg_pnl'       => $closed > 0 ? round((float) $s['net_pnl'] / $closed, 2) : null,
             'profit_factor' => $loss > 0 ? round($win / $loss, 2) : null,
         ];
+    }
+
+    /**
+     * Performance analytics over a client's CLOSED trades, by exit date.
+     *
+     * @param string $range 30d | 90d | ytd | 1y | all | custom (uses $from/$to)
+     */
+    public function analytics(int $user_id, string $range, string $from = '', string $to = ''): array {
+        [$start, $end] = $this->resolve_range($range, $from, $to);
+
+        $where  = "trongate_user_id = :uid AND status = 'closed' AND pnl IS NOT NULL AND exit_date IS NOT NULL";
+        $params = ['uid' => $user_id];
+        if ($start !== null) {
+            $where .= ' AND exit_date >= :start_d';
+            $params['start_d'] = $start . ' 00:00:00';
+        }
+        if ($end !== null) {
+            $where .= ' AND exit_date <= :end_d';
+            $params['end_d'] = $end . ' 23:59:59';
+        }
+
+        $rows = $this->db->query_bind(
+            "SELECT id, symbol, direction, entry_price, stop_loss, quantity, fees, pnl, entry_date, exit_date
+               FROM trades WHERE $where
+           ORDER BY exit_date ASC, id ASC LIMIT " . self::ANALYTICS_MAX_TRADES,
+            $params, 'array'
+        );
+
+        $tags = [];
+        foreach (array_chunk(array_map(fn($r) => (int) $r['id'], $rows), 500) as $chunk) {
+            $tags += $this->tags_for_trades($chunk);
+        }
+
+        foreach ($rows as &$r) {
+            $risk   = $r['stop_loss'] !== null ? abs((float) $r['entry_price'] - (float) $r['stop_loss']) * (float) $r['quantity'] : 0.0;
+            $r['r'] = $risk > 0 ? (float) $r['pnl'] / $risk : null;
+            $r['tags'] = $tags[(int) $r['id']] ?? [];
+        }
+        unset($r);
+
+        return Trade_analytics::compute($rows);
+    }
+
+    /** @return array{0: ?string, 1: ?string} inclusive Y-m-d bounds (null = open-ended) */
+    private function resolve_range(string $range, string $from, string $to): array {
+        $today = date('Y-m-d');
+        return match ($range) {
+            '30d'    => [date('Y-m-d', strtotime('-29 days')), $today],
+            '90d'    => [date('Y-m-d', strtotime('-89 days')), $today],
+            '1y'     => [date('Y-m-d', strtotime('-1 year +1 day')), $today],
+            'ytd'    => [date('Y') . '-01-01', $today],
+            'custom' => [$this->is_ymd($from) ? $from : null, $this->is_ymd($to) ? $to : null],
+            default  => [null, null],
+        };
     }
 
     // ═══════════════════════════════════════════════════════════════════

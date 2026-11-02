@@ -8,6 +8,7 @@
  *
  * Routes (module: trade_manager)
  *   GET  trade_manager                      list + filters + stats
+ *   GET  trade_manager/analytics            performance analytics (?range=30d|90d|ytd|1y|all|custom)
  *   GET  trade_manager/create               new trade form
  *   POST trade_manager/store                save new trade
  *   GET  trade_manager/show/{id}            trade detail + screenshots
@@ -70,6 +71,23 @@ class Trade_manager extends Trongate {
             'filters'  => $filters,
             'tags'     => $this->model->list_tags($this->user_id),
             'stats'    => Inertia::defer(fn() => $this->model->stats($this->user_id)),
+        ]);
+    }
+
+    public function analytics(): void {
+        $range = (string) ($_GET['range'] ?? '90d');
+        if (!in_array($range, ['30d', '90d', 'ytd', '1y', 'all', 'custom'], true)) {
+            $range = '90d';
+        }
+        $from = (string) ($_GET['from'] ?? '');
+        $to   = (string) ($_GET['to'] ?? '');
+
+        Inertia::title('Performance Analytics');
+        Inertia::render('TradeManager/Analytics', [
+            'range'     => $range,
+            'from'      => $from,
+            'to'        => $to,
+            'analytics' => $this->model->analytics($this->user_id, $range, $from, $to),
         ]);
     }
 
